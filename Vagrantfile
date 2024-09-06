@@ -20,13 +20,19 @@ provider = ENV['PROVIDER']
 dhcp = ENV['DHCP']
 base_ip_address = ENV['BASE_IP_ADDRESS']
 vm_gateway = ENV['VM_GATEWAY']
+default_username = ENV['DEFAULT_USERNAME']
+default_password = ENV['DEFAULT_PASSWORD']
+
+# Read SSH public key once, making it accessible in all blocks
+ssh_pub_key = File.readlines(ssh_key_path).first.strip
 
 Vagrant.configure("2") do |config|
-	
+
 	# Loop to define multiple VMs based on the node_count variable
 	(1..node_count).each do |i|
 	  config.vm.define "#{node_name}0#{i}" do |node|
 		node.vm.box = node_box
+
 		# Configure the VM's network settings, bridged to the specified Hyper-V switch
 		node.vm.network "public_network", bridge: hpv_public_switch
 		  
@@ -35,13 +41,31 @@ Vagrant.configure("2") do |config|
   
 		# Provision the VM with the user's SSH public key for authentication
 		node.vm.provision "shell" do |s|
-			ssh_pub_key = File.readlines(ssh_key_path).first.strip
-		  s.inline = <<-SHELL
-			mkdir -p /root/.ssh
-			echo #{ssh_pub_key} >> /home/vagrant/.ssh/authorized_keys
-			echo #{ssh_pub_key} >> /root/.ssh/authorized_keys
-		  SHELL
+			s.inline = <<-SHELL
+				# Add SSH key for root user
+				mkdir -p /root/.ssh
+				echo #{ssh_pub_key} >> /root/.ssh/authorized_keys
+				echo #{ssh_pub_key} >> /home/vagrant/.ssh/authorized_keys
+				# Change password for the vagrant user
+				echo 'vagrant:#{default_password}' | sudo chpasswd
+			SHELL
 		end
+		
+		# Provision the VM to create the default user and set the password
+		node.vm.provision "shell", inline: <<-SHELL
+			# Create user #{default_username} with the provided password
+			sudo useradd -m -s /bin/bash #{default_username}
+			echo '#{default_username}:#{default_password}' | sudo chpasswd
+
+			# Add #{default_username} to sudo group
+			sudo usermod -aG sudo #{default_username}
+			# Set up SSH for #{default_username}
+			mkdir -p /home/#{default_username}/.ssh
+			echo #{ssh_pub_key} >> /home/#{default_username}/.ssh/authorized_keys
+			chown -R #{default_username}:#{default_username} /home/#{default_username}/.ssh
+			chmod 600 /home/#{default_username}/.ssh/authorized_keys
+
+		SHELL
 
 		# Condition for executing the provisioner based on the value of DHCP
 		if dhcp != "yes"
@@ -61,7 +85,7 @@ Vagrant.configure("2") do |config|
 		  # h.maxmemory = 4096
 		  h.memory = 2048
 		  h.cpus = 1
-		  h.auto_start_action = "StartIfRunning" #  (Nothing, StartIfRunning, Start) - Default: Nothing.
+		  h.auto_start_action = "StartIfRunning" # (Nothing, StartIfRunning, Start) - Default: Nothing.
 		end
 	  end
 	end
